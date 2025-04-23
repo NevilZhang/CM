@@ -103,13 +103,35 @@ public class ClientHandler implements Runnable {
      * @return RequestInfo
      */
     private static RequestInfo parseRequest(String request) {
-        // 简单的请求解析，仅提取URL
+        RequestInfo requestInfo = new RequestInfo();
         String[] lines = request.split("\r\n");
+
+        // 解析请求行
         String[] firstLine = lines[0].split(" ");
-        String method = firstLine[0];
-        String url = firstLine[1];
-        return new RequestInfo(method, url);
+        requestInfo.setMethod(firstLine[0]);
+        requestInfo.setUrl(firstLine[1]);
+
+        // 解析请求头
+        int i = 1;
+        for (; i < lines.length; i++) {
+            String line = lines[i];
+            if (line.isEmpty()) {
+                break;
+            }
+            String[] headerParts = line.split(": ", 2);
+            if (headerParts.length == 2) {
+                requestInfo.getHeaders().put(headerParts[0], headerParts[1]);
+            }
+        }
+
+        // 解析 Body
+        if (i < lines.length) {
+            StringBuilder bodyBuilder = new StringBuilder();
+            for (int j = i + 1; j < lines.length; j++) {
+                bodyBuilder.append(lines[j]);
+            }
+            requestInfo.setBody(bodyBuilder.toString());
+        }
+        return requestInfo;
     }
-
-
 }
