@@ -13,19 +13,21 @@ import java.net.Socket;
 import java.util.HashMap;
 import java.util.Map;
 
+import static org.nevil.response.HttpResponse.generateResponse;
+import static org.nevil.response.HttpStatusEnum.*;
+
 @Slf4j
 @Data
 public class ClientHandler implements Runnable {
-    private static final Map<String, ControllerHandler> routeMap = new HashMap<>();
+    // 路由映射表(url -> method -> ControllerHandler)
+    private static final Map<String, Map<String, ControllerHandler>> routeMap = new HashMap<>();
 
     static {
         // 示例路由配置
-        routeMap.put("/helloWorld", requestInfo -> "Hello, World!");
+        Map<String, ControllerHandler> methodMap = new HashMap<>();
+        methodMap.put("GET", requestInfo -> "Hello, World!");
+        routeMap.put("/", methodMap);
     }
-
-    private static final String RESPONSE_HEADER_200 = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n";
-    private static final String RESPONSE_HEADER_404 = "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\n\r\n";
-    private static final String RESPONSE_HEADER_500 = "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\n";
 
     private Socket clientSocket;
 
@@ -42,23 +44,30 @@ public class ClientHandler implements Runnable {
             RequestInfo requestInfo = parseRequest(request);
 
             // 2. 路由匹配
-            ControllerHandler handler = routeMap.get(requestInfo.getUrl());
+            Map<String, ControllerHandler> methodMap = routeMap.get(requestInfo.getUrl());
+            if (methodMap == null) {
+                // 如果没有找到对应的方法映射表，返回404
+                clientSocket.getOutputStream().write(generateResponse(NOT_FOUND).getBytes());
+                return;
+            }
+            ControllerHandler handler = methodMap.get(requestInfo.getMethod());
             if (handler == null) {
-                // 如果没有找到对应的处理程序，返回404
-                clientSocket.getOutputStream().write(generateResponse(RESPONSE_HEADER_404, "404 Not Found").getBytes());
+                // 如果没有找到对应的处理程序，返回405
+                clientSocket.getOutputStream().write(generateResponse(METHOD_NOT_ALLOWED).getBytes());
                 return;
             }
 
-            // 4. 处理请求
+            // 3. 处理请求
             Object result = handler.handle(requestInfo);
 
-            // 5. 生成响应
-            clientSocket.getOutputStream().write(generateResponse(RESPONSE_HEADER_200, result).getBytes());
+            // 4. 生成响应
+            clientSocket.getOutputStream().write(generateResponse(OK, result).getBytes());
             clientSocket.close();
         } catch (IOException e) {
             log.error("Error handling client request: {}", e.getMessage());
             try {
-                clientSocket.getOutputStream().write(generateResponse(RESPONSE_HEADER_500, "500 Internal Server Error").getBytes());
+                // 处理异常，返回500
+                clientSocket.getOutputStream().write(generateResponse(INTERNAL_SERVER_ERROR, "500 Internal Server Error").getBytes());
             } catch (Exception ex) {
                 log.error("Error writing to client socket: {}", ex.getMessage());
             }
@@ -94,33 +103,35 @@ public class ClientHandler implements Runnable {
      * @return RequestInfo
      */
     private static RequestInfo parseRequest(String request) {
-        // 简单的请求解析，仅提取URL
+        RequestInfo requestInfo = new RequestInfo();
         String[] lines = request.split("\r\n");
+
+        // 解析请求行
         String[] firstLine = lines[0].split(" ");
-        String method = firstLine[0];
-        String url = firstLine[1];
-        return new RequestInfo(method, url);
-    }
+        requestInfo.setMethod(firstLine[0]);
+        requestInfo.setUrl(firstLine[1]);
 
-    /**
-     * 生成响应
-     *
-     * @param result 处理结果
-     * @return 响应字符串
-     */
-    private static String generateResponse(String prefix, Object result) {
-        // 检查 result 是否为 null，避免直接拼接 "null"
-        if (result == null) {
-            return prefix + "null";
+        // 解析请求头
+        int i = 1;
+        for (; i < lines.length; i++) {
+            String line = lines[i];
+            if (line.isEmpty()) {
+                break;
+            }
+            String[] headerParts = line.split(": ", 2);
+            if (headerParts.length == 2) {
+                requestInfo.getHeaders().put(headerParts[0], headerParts[1]);
+            }
         }
 
-        try {
-            // 确保 result 的 toString() 方法安全调用
-            String resultString = String.valueOf(result);
-            return prefix + resultString;
-        } catch (Exception e) {
-            // 捕获异常并返回错误信息，避免程序崩溃
-            return prefix + "Error: Unable to process result due to an internal error.";
+        // 解析 Body
+        if (i < lines.length) {
+            StringBuilder bodyBuilder = new StringBuilder();
+            for (int j = i + 1; j < lines.length; j++) {
+                bodyBuilder.append(lines[j]);
+            }
+            requestInfo.setBody(bodyBuilder.toString());
         }
+        return requestInfo;
     }
 }
