@@ -12,6 +12,8 @@ import java.io.InputStreamReader;
 import java.net.Socket;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static org.nevil.response.HttpResponse.generateResponse;
 import static org.nevil.response.HttpStatusEnum.*;
@@ -25,12 +27,25 @@ public class ClientHandler implements Runnable {
     static {
         // 示例路由配置
         Map<String, ControllerHandler> methodMap = new HashMap<>();
-        methodMap.put("GET", requestInfo -> "Hello, World!");
+        methodMap.put("GET", new ControllerHandler() {
+            @Override
+            public Object handle(RequestInfo requestInfo) {
+                return "Hello, World!";
+            }
+        });
+        methodMap.put("POST", new ControllerHandler() {
+            @Override
+            public Object handle(RequestInfo requestInfo) {
+                return "Received POST request with body: " + requestInfo.getBody();
+            }
+        });
         routeMap.put("/", methodMap);
     }
 
+    // 客户端套接字
     private Socket clientSocket;
 
+    // 构造函数
     public ClientHandler(Socket clientSocket) {
         this.clientSocket = clientSocket;
     }
@@ -39,9 +54,25 @@ public class ClientHandler implements Runnable {
     public void run() {
         try {
             // 1. 解析请求
-            InputStream input = clientSocket.getInputStream();
-            String request = readRequest(input);
-            RequestInfo requestInfo = parseRequest(request);
+            InputStream inputStream = clientSocket.getInputStream();
+
+            // 解析Header
+            String headerStr = readHeader(inputStream);
+            RequestInfo requestInfo = parseRequest(headerStr);
+
+            // 检查 Expect: 100-continue
+            if (requestInfo.getHeaders().containsKey("Expect") && requestInfo.getHeaders().get("Expect").equalsIgnoreCase("100-continue")) {
+                clientSocket.getOutputStream().write(generateResponse(CONTINUE).getBytes());
+            }
+
+            int contentLength = readContentLength(headerStr);
+
+            // 读取POST请求体
+            if ("POST".equalsIgnoreCase(requestInfo.getMethod()) && contentLength > 0) {
+                byte[] bodyBytes = new byte[contentLength];
+                inputStream.read(bodyBytes, 0, contentLength);
+                requestInfo.setBody(new String(bodyBytes));
+            }
 
             // 2. 路由匹配
             Map<String, ControllerHandler> methodMap = routeMap.get(requestInfo.getUrl());
@@ -78,6 +109,30 @@ public class ClientHandler implements Runnable {
                 log.error("Error closing client socket: {}", e.getMessage());
             }
         }
+    }
+
+    private int readContentLength(String header) {
+        // 2. 解析Content-Length
+        int contentLength = 0;
+        Pattern pattern = Pattern.compile("Content-Length: (\\d+)", Pattern.CASE_INSENSITIVE);
+        Matcher matcher = pattern.matcher(header);
+        if (matcher.find()) {
+            contentLength = Integer.parseInt(matcher.group(1));
+        }
+        return contentLength;
+    }
+
+    private String readHeader(InputStream input) throws IOException {
+        BufferedReader reader = new BufferedReader(new InputStreamReader(input));
+
+        // 1. 读取Header
+        StringBuilder headerBuilder = new StringBuilder();
+        String line;
+        while ((line = reader.readLine()) != null && !line.isEmpty()) {
+            headerBuilder.append(line).append("\r\n");
+        }
+        String header = headerBuilder.toString();
+        return header;
     }
 
     /**
@@ -124,7 +179,7 @@ public class ClientHandler implements Runnable {
             }
         }
 
-        // 解析 Body
+        // 解析请求体（仅适用于POST请求）
         if (i < lines.length) {
             StringBuilder bodyBuilder = new StringBuilder();
             for (int j = i + 1; j < lines.length; j++) {
@@ -132,6 +187,9 @@ public class ClientHandler implements Runnable {
             }
             requestInfo.setBody(bodyBuilder.toString());
         }
+
         return requestInfo;
     }
+
+    // todo routeMap 注册方法
 }
